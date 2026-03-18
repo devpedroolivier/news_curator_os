@@ -1,0 +1,43 @@
+[project]
+name = "news-curator-os"
+version = "0.1.0"
+description = "Sistema de curadoria de noticias com Agno AgentOS, OpenAI e OpenSpec"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "agno>=2.5.10",
+    "fastapi>=0.135.1",
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "openai>=2.29.0",
+    "pydantic-settings>=2.13.1",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[project.scripts]
+news-curator-os = "news_curator_os:main"
+news-curator-cli = "news_curator_os.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.6",
+]
+
+[tool.uv]
+cache-dir = ".uv_cache"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "e2e: testes end-to-end reais com integracoes externas",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

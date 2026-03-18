@@ -1,0 +1,15 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.10, FastAPI, Agno AgentOS, OpenAI API, uv, OpenSpec.
+  Product: sistema de curadoria de noticias a partir de uma headline.
+  Workflow alvo: headline -> busca -> analise -> verificacao -> qualificacao -> output.
+  UI: painel editorial com monitoramento do fluxo, scores, trilha de evidencias e proximos passos.
+
+rules:
+  proposal:
+    - Sempre explicitar o valor editorial e operacional da mudanca.
+  design:
+    - Sempre separar o que e bootstrap do que e implementacao final.
+  tasks:
+    - Quebrar em incrementos pequenos e verificaveis.

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>News Curator OS</title>
+    <link rel="stylesheet" href="{{ request.url_for('static', path='app.css') }}" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <article class="panel hero-main">
+          <div class="eyebrow">Agno AgentOS · OpenAI · OpenSpec · uv</div>
+          <h1>Curadoria de noticias com trilha de verificacao visivel.</h1>
+          <p class="hero-copy">
+            Este painel acompanha o fluxo completo da headline, da busca inicial ate a
+            qualificacao editorial. Nesta etapa o sistema ja aceita busca real com
+            `NewsAPI`, persiste as execucoes em SQLite e usa agentes especializados
+            no Agno quando a `OPENAI_API_KEY` estiver configurada.
+          </p>
+
+          <div class="meta">
+            <div class="meta-card">
+              <span>Fluxo</span>
+              <strong>5 estagios</strong>
+            </div>
+            <div class="meta-card">
+              <span>Modo</span>
+              <strong id="execution-mode">{{ sample.execution_mode }}</strong>
+            </div>
+            <div class="meta-card">
+              <span>Provider</span>
+              <strong id="search-provider">{{ sample.search_provider }}</strong>
+            </div>
+          </div>
+
+          <div class="meta" style="margin-top: 16px;">
+            <div class="meta-card">
+              <span>Runs</span>
+              <strong id="monitor-total-runs">{{ monitoring.total_runs }}</strong>
+            </div>
+            <div class="meta-card">
+              <span>Com evidencia</span>
+              <strong id="monitor-runs-evidence">{{ monitoring.runs_with_evidence }}</strong>
+            </div>
+            <div class="meta-card">
+              <span>Degradados</span>
+              <strong id="monitor-runs-degraded">{{ monitoring.degraded_runs }}</strong>
+            </div>
+          </div>
+        </article>
+
+        <aside class="panel input-card">
+          <h2>Headline Input</h2>
+          <form id="headline-form">
+            <textarea id="headline-input" name="headline">Urgente: Banco Central anuncia nova medida que afeta o credito no Brasil</textarea>
+            <button type="submit">Executar pipeline e persistir</button>
+          </form>
+        </aside>
+      </section>
+
+      <section class="content-grid">
+        <section class="panel">
+          <div class="section-head">
+            <h2>Fluxo</h2>
+            <div class="status-pill">monitoramento ativo</div>
+          </div>
+          <div id="stages" class="stages"></div>
+        </section>
+
+        <aside class="panel">
+          <div class="section-head">
+            <h2>Output</h2>
+          </div>
+          <div class="output-stack">
+            <article class="output-card">
+              <span class="output-label">Veredito</span>
+              <strong id="editorial-verdict"></strong>
+            </article>
+            <article class="output-card">
+              <span class="output-label">Credibilidade</span>
+              <strong id="credibility-band"></strong>
+            </article>
+            <article class="output-card">
+              <span class="output-label">Acao recomendada</span>
+              <strong id="recommended-action"></strong>
+            </article>
+            <article class="output-card output-body">
+              <span class="output-label">Proximos passos</span>
+              <ul id="next-actions" class="next-actions"></ul>
+            </article>
+          </div>
+        </aside>
+      </section>
+
+      <section class="sub-grid">
+        <section class="panel">
+          <div class="section-head">
+            <h2>Evidencias</h2>
+          </div>
+          <div id="evidence-list" class="evidence-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>Historico</h2>
+          </div>
+          <div id="recent-list" class="recent-list"></div>
+        </section>
+      </section>
+
+      <section class="panel" style="margin-top: 20px;">
+        <div class="section-head">
+          <h2>Auditoria</h2>
+        </div>
+        <div id="audit-list" class="audit-list"></div>
+      </section>
+
+      <p class="footer-note">
+        Headline normalizada: <strong id="normalized-headline"></strong>
+      </p>
+    </main>
+
+    <script>
+      const initialData = {{ sample | tojson }};
+      const initialRecentRuns = {{ recent_runs | tojson }};
+      const initialMonitoring = {{ monitoring | tojson }};
+
+      function renderPreview(data) {
+        document.getElementById("execution-mode").textContent = data.execution_mode;
+        document.getElementById("search-provider").textContent = data.search_provider;
+        document.getElementById("normalized-headline").textContent = data.normalized_headline;
+        document.getElementById("editorial-verdict").textContent = data.output.editorial_verdict;
+        document.getElementById("credibility-band").textContent = `${data.output.credibility_band} · score ${data.output.confidence_score}`;
+        document.getElementById("recommended-action").textContent = data.output.recommended_action;
+
+        const stagesEl = document.getElementById("stages");
+        stagesEl.innerHTML = "";
+
+        data.stages.forEach((stage) => {
+          const article = document.createElement("article");
+          article.className = "stage";
+          article.dataset.state = stage.state;
+          article.innerHTML = `
+            <div class="stage-top">
+              <span>${stage.key}</span>
+              <div class="score">${stage.score ?? "--"}</div>
+            </div>
+            <h3>${stage.title}</h3>
+            <p>${stage.summary}</p>
+            <ul>
+              ${stage.details.map((detail) => `<li>${detail}</li>`).join("")}
+            </ul>
+          `;
+          stagesEl.appendChild(article);
+        });
+
+        const nextActionsEl = document.getElementById("next-actions");
+        nextActionsEl.innerHTML = data.next_actions
+          .map((item) => `<li>${item}</li>`)
+          .join("");
+
+        const evidenceEl = document.getElementById("evidence-list");
+        evidenceEl.innerHTML = data.evidence.length
+          ? data.evidence.map((item) => `
+              <article class="evidence-card">
+                <strong>${item.title}</strong>
+                <div class="mini-meta">${item.source} · ${item.published_at ?? "sem data"}</div>
+                <p>${item.description ?? "Sem descricao adicional."}</p>
+                ${item.url ? `<a href="${item.url}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
+              </article>
+            `).join("")
+          : `<article class="evidence-card"><strong>Sem evidencias anexadas</strong><p>O provider atual nao retornou artigos para esta headline.</p></article>`;
+
+        const auditEl = document.getElementById("audit-list");
+        auditEl.innerHTML = data.audit.map((item) => `
+          <article class="audit-card">
+            <strong>${item.stage}</strong>
+            <div class="mini-meta">${item.severity} · ${item.created_at}</div>
+            <p>${item.message}</p>
+          </article>
+        `).join("");
+      }
+
+      function renderRecentRuns(items) {
+        const recentEl = document.getElementById("recent-list");
+        recentEl.innerHTML = items.length
+          ? items.map((item) => `
+              <article class="recent-card">
+                <strong>${item.headline}</strong>
+                <div class="mini-meta">${item.created_at}</div>
+                <p>Credibilidade: ${item.credibility_band} · Score: ${item.confidence_score}</p>
+                <p>Evidencias: ${item.evidence_count} · Modo: ${item.execution_mode} · LLM: ${item.llm_mode}</p>
+              </article>
+            `).join("")
+          : `<article class="recent-card"><strong>Nenhuma execucao persistida</strong><p>As rodadas executadas pelo formulario passam a aparecer aqui.</p></article>`;
+      }
+
+      function renderMonitoring(data) {
+        document.getElementById("monitor-total-runs").textContent = data.total_runs;
+        document.getElementById("monitor-runs-evidence").textContent = data.runs_with_evidence;
+        document.getElementById("monitor-runs-degraded").textContent = data.degraded_runs;
+      }
+
+      async function refreshRecentRuns() {
+        const response = await fetch("/api/v1/runs/recent");
+        const data = await response.json();
+        renderRecentRuns(data);
+      }
+
+      async function refreshMonitoring() {
+        const response = await fetch("/api/v1/monitoring/summary");
+        const data = await response.json();
+        renderMonitoring(data);
+      }
+
+      async function submitHeadline(event) {
+        event.preventDefault();
+        const headline = document.getElementById("headline-input").value.trim();
+        const response = await fetch("/api/v1/pipeline/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ headline }),
+        });
+
+        const data = await response.json();
+        renderPreview(data);
+        await refreshRecentRuns();
+        await refreshMonitoring();
+      }
+
+      document.getElementById("headline-form").addEventListener("submit", submitHeadline);
+      renderPreview(initialData);
+      renderRecentRuns(initialRecentRuns);
+      renderMonitoring(initialMonitoring);
+    </script>
+  </body>
+</html>
