@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -18,6 +19,8 @@ from .models import (
 )
 from .repository import RunRepository
 from .search import NewsSearchProvider
+
+logger = logging.getLogger(__name__)
 
 PipelineEventCallback = Callable[[str, dict[str, Any]], None]
 
@@ -52,6 +55,7 @@ class HeadlinePipeline:
     ) -> PipelineRun:
         normalized = self._normalize(headline)
         now = self._now()
+        logger.info("Pipeline started for headline: %.80s (persist=%s)", normalized, persist)
         self._emit(
             event_callback,
             "input_received",
@@ -211,6 +215,10 @@ class HeadlinePipeline:
                 "execution_mode": run.execution_mode,
                 "confidence_score": run.output.confidence_score,
             },
+        )
+        logger.info(
+            "Pipeline completed: run_id=%s mode=%s confidence=%s",
+            run.run_id, run.execution_mode, run.output.confidence_score,
         )
         return run
 

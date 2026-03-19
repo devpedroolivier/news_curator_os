@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
 from .models import MonitoringSummary, PipelineRun, RecentRunSummary
+
+logger = logging.getLogger(__name__)
 
 
 class RunRepository:

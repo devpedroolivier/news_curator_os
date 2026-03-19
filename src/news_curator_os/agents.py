@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Type, TypeVar
@@ -9,6 +10,9 @@ from pydantic import BaseModel
 
 from .config import Settings
 from .models import AnalysisPayload, QualificationOutput, SearchEvidence, VerificationPayload
+from .text_utils import extract_entities
+
+logger = logging.getLogger(__name__)
 
 SENSATIONAL_TERMS = {
     "urgente",
@@ -140,12 +144,16 @@ class NewsCurationAgents:
             instructions=[
                 "Voce decide a qualificacao editorial final.",
                 "Se faltar evidencia, seja conservador.",
+                "REGRA OBRIGATORIA: se evidence_count for 0, o confidence_score NUNCA pode ultrapassar 42.",
                 "Retorne um parecer objetivo, acionavel e em portugues.",
             ],
             payload=prompt,
             output_schema=QualificationOutput,
         )
-        return content or self._fallback_qualification(headline, evidence, analysis, verification)
+        result = content or self._fallback_qualification(headline, evidence, analysis, verification)
+        if not evidence and result.confidence_score > 42:
+            result = result.model_copy(update={"confidence_score": 42})
+        return result
 
     async def draft_article(
         self,
@@ -176,13 +184,16 @@ class NewsCurationAgents:
                 "Responda em portugues do Brasil.",
                 "Escreva em Markdown limpo.",
                 "Nao invente fatos ausentes nas evidencias fornecidas.",
+                "REGRA CRITICA: voce so pode citar URLs que estejam EXATAMENTE presentes no campo 'url' dos itens de 'evidence'. NUNCA invente, construa ou extrapole URLs. Se nao houver URL, cite apenas pelo nome da fonte, sem link.",
                 "Use ate 5 fontes e destaque fontes oficiais quando existirem.",
+                "Na secao '## Fontes consultadas', liste APENAS fontes presentes na lista de evidence. Nao adicione fontes externas.",
                 "Inclua uma secao de divergencias entre fontes, mesmo que para dizer que nao houve divergencia relevante.",
                 "Inclua uma secao final chamada '## Fontes consultadas'.",
             ],
             payload=prompt,
         )
-        return content or self._fallback_article(headline, evidence, analysis, verification, qualification)
+        article = content or self._fallback_article(headline, evidence, analysis, verification, qualification)
+        return self._sanitize_article_urls(article, evidence)
 
     async def _run_structured(
         self,
@@ -214,6 +225,7 @@ class NewsCurationAgents:
             )
             return self._coerce_output(run_output.content, output_schema)
         except Exception:
+            logger.exception("Agent %s structured call failed", name)
             return None
 
     async def _run_text(
@@ -242,6 +254,7 @@ class NewsCurationAgents:
             run_output = await agent.arun(json.dumps(payload, ensure_ascii=False))
             return str(run_output.content).strip() if run_output.content else None
         except Exception:
+            logger.exception("Agent %s text call failed", name)
             return None
 
     def _coerce_output(self, content: object, output_schema: Type[ModelT]) -> ModelT | None:
@@ -433,13 +446,25 @@ class NewsCurationAgents:
             ]
         )
 
+    def _sanitize_article_urls(self, article: str, evidence: list[SearchEvidence]) -> str:
+        allowed_urls = {item.url for item in evidence if item.url}
+        if not allowed_urls:
+            return re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', article)
+
+        def _check_url(match: re.Match) -> str:
+            display_text = match.group(1)
+            url = match.group(2)
+            if url in allowed_urls:
+                return match.group(0)
+            normalized = url.rstrip('/')
+            if any(normalized == allowed.rstrip('/') for allowed in allowed_urls):
+                return match.group(0)
+            return display_text
+
+        return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _check_url, article)
+
     def _extract_entities(self, text: str) -> list[str]:
-        matches = re.findall(r"\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇ-]{2,}\b", text)
-        unique: list[str] = []
-        for item in matches:
-            if item not in unique:
-                unique.append(item)
-        return unique
+        return extract_entities(text)
 
     def _detect_divergences(self, evidence: list[SearchEvidence]) -> list[str]:
         if len(evidence) < 2:

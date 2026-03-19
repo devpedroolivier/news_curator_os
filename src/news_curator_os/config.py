@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     news_max_articles: int = Field(default=5, alias="NEWS_MAX_ARTICLES")
     newsapi_key: str | None = Field(default=None, alias="NEWSAPI_KEY")
     newsapi_base_url: str = Field(default="https://newsapi.org/v2/everything", alias="NEWSAPI_BASE_URL")
+    tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
 
     model_config = SettingsConfigDict(
         env_file=".env",

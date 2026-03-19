@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -9,6 +10,11 @@ import httpx
 
 from .config import Settings
 from .models import SearchEvidence, SearchExecution
+from .text_utils import OFFICIAL_KEYWORD_DOMAINS, derive_official_domains, extract_entities, tokenize
+
+MIN_RELEVANCE_OVERLAP = 0.12
+
+logger = logging.getLogger(__name__)
 
 OFFICIAL_DOMAINS = {
     "gov.br",
@@ -56,29 +62,6 @@ TRUSTED_NEWS_DOMAINS = {
     "cnbc.com",
 }
 
-OFFICIAL_KEYWORD_DOMAINS = {
-    "banco central": ["bcb.gov.br", "fazenda.gov.br", "gov.br"],
-    "credito": ["bcb.gov.br", "fazenda.gov.br", "gov.br"],
-    "selic": ["bcb.gov.br", "fazenda.gov.br"],
-    "pix": ["bcb.gov.br"],
-    "ministerio": ["gov.br", "planalto.gov.br", "in.gov.br"],
-    "governo": ["gov.br", "planalto.gov.br", "in.gov.br"],
-    "decreto": ["planalto.gov.br", "in.gov.br", "gov.br"],
-    "portaria": ["in.gov.br", "gov.br"],
-    "lei": ["planalto.gov.br", "camara.leg.br", "senado.leg.br"],
-    "saude": ["saude.gov.br", "gov.br", "who.int"],
-    "vacina": ["saude.gov.br", "gov.br", "who.int", "fda.gov", "cdc.gov"],
-    "inflacao": ["ibge.gov.br", "bcb.gov.br"],
-    "inflação": ["ibge.gov.br", "bcb.gov.br"],
-    "desemprego": ["ibge.gov.br"],
-    "eleicao": ["tse.jus.br", "camara.leg.br", "senado.leg.br"],
-    "eleição": ["tse.jus.br", "camara.leg.br", "senado.leg.br"],
-    "stf": ["stf.jus.br"],
-    "cvm": ["cvm.gov.br", "sec.gov"],
-    "bitcoin": ["bcb.gov.br", "cvm.gov.br", "sec.gov"],
-    "crypto": ["bcb.gov.br", "cvm.gov.br", "sec.gov"],
-}
-
 
 @dataclass(frozen=True)
 class QuerySpec:
@@ -104,11 +87,12 @@ class ManualSearchProvider:
         self.settings = settings
 
     def search(self, headline: str) -> SearchExecution:
-        entities = self._extract_entities(headline)
-        official_domains = self._suggest_official_domains(headline)
+        entities = extract_entities(headline)
+        official_domains = derive_official_domains(headline)
+        tokens = tokenize(headline)
         query_plan = [
             f'Consulta exata: "{headline}"',
-            f"Consulta expandida: {' '.join(self._tokens(headline)[:6])} fact check",
+            f"Consulta expandida: {' '.join(tokens[:6])} fact check",
             (
                 f"Consulta por entidades: {' '.join(entities[:3])} site:reuters.com OR site:apnews.com OR site:bbc.com"
                 if entities
@@ -121,6 +105,7 @@ class ManualSearchProvider:
                 + ", ".join(f"site:{domain}" for domain in official_domains[:5])
             )
 
+        logger.info("Manual search fallback for headline: %.80s", headline)
         return SearchExecution(
             provider="manual",
             mode="fallback",
@@ -133,27 +118,6 @@ class ManualSearchProvider:
             note="Provider real nao configurado. O sistema esta sugerindo consultas para verificacao manual.",
         )
 
-    def _extract_entities(self, headline: str) -> list[str]:
-        matches = re.findall(r"\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇ-]{2,}\b", headline)
-        unique: list[str] = []
-        for item in matches:
-            if item not in unique:
-                unique.append(item)
-        return unique
-
-    def _suggest_official_domains(self, headline: str) -> list[str]:
-        lowered = headline.casefold()
-        domains: list[str] = []
-        for keyword, candidates in OFFICIAL_KEYWORD_DOMAINS.items():
-            if keyword in lowered:
-                for domain in candidates:
-                    if domain not in domains:
-                        domains.append(domain)
-        return domains
-
-    def _tokens(self, headline: str) -> list[str]:
-        return [token for token in re.findall(r"\w+", headline) if len(token) > 3]
-
 
 class NewsApiSearchProvider:
     def __init__(self, settings: Settings):
@@ -161,6 +125,7 @@ class NewsApiSearchProvider:
 
     async def search(self, headline: str) -> SearchExecution:
         if not self.settings.newsapi_key:
+            logger.warning("NewsAPI key not configured, returning degraded result")
             return SearchExecution(
                 provider="newsapi",
                 mode="degraded",
@@ -182,6 +147,7 @@ class NewsApiSearchProvider:
             try:
                 result = await self._fetch_articles(spec)
             except httpx.HTTPError as exc:
+                logger.warning("NewsAPI request failed for query %r: %s", spec.query, exc)
                 query_plan.append(
                     f"{spec.query} | language={spec.language or 'all'} | domains={','.join(spec.domains) or 'all'} | erro={exc.__class__.__name__}"
                 )
@@ -192,11 +158,11 @@ class NewsApiSearchProvider:
                 f"{spec.query} | language={spec.language or 'all'} | domains={','.join(spec.domains) or 'all'} | results={len(result)}"
             )
 
-            selected_preview = self._select_evidence(collected, limit=target_sources)
+            selected_preview = self._select_evidence(headline, collected, limit=target_sources)
             if len(selected_preview) >= target_sources and self._official_coverage_sufficient(headline, selected_preview):
                 break
 
-        selected = self._select_evidence(collected, limit=target_sources)
+        selected = self._select_evidence(headline, collected, limit=target_sources)
         official_count = sum(1 for item in selected if item.is_official)
         mode = "live" if selected else "live-empty"
 
@@ -259,22 +225,36 @@ class NewsApiSearchProvider:
         return normalized
 
     def _build_queries(self, headline: str) -> list[QuerySpec]:
-        tokens = self._tokens(headline)
+        tokens = tokenize(headline)
+        entities = extract_entities(headline)
         short_tokens = tokens[:4]
         medium_tokens = tokens[:6]
         entity_like = [token for token in short_tokens if len(token) > 4]
-        official_domains = tuple(self._derive_official_domains(headline))
+        official_domains = tuple(derive_official_domains(headline))
+
+        entity_terms = entities[:4] if entities else entity_like
+        thematic_terms = [t for t in tokens if t.casefold() in OFFICIAL_KEYWORD_DOMAINS]
+        combined_terms = list(dict.fromkeys(entity_terms + thematic_terms))
 
         raw_candidates = [
             QuerySpec(query=f'"{headline}"', language=self.settings.news_language, label="exact"),
             QuerySpec(query=" ".join(medium_tokens) or headline, language=self.settings.news_language, label="expanded"),
+            QuerySpec(
+                query=" ".join(combined_terms[:5]) or " ".join(medium_tokens) or headline,
+                language=self.settings.news_language,
+                label="entity-focused",
+            ),
             QuerySpec(query=" ".join(short_tokens) or headline, language=self.settings.news_language, label="short"),
-            QuerySpec(query=" ".join(entity_like) or " ".join(short_tokens) or headline, language=None, label="global"),
+            QuerySpec(
+                query=" ".join(combined_terms[:5]) or " ".join(short_tokens) or headline,
+                language=None,
+                label="global",
+            ),
         ]
         if official_domains:
             raw_candidates.append(
                 QuerySpec(
-                    query=" ".join(entity_like) or " ".join(short_tokens) or headline,
+                    query=" ".join(combined_terms[:5]) or " ".join(short_tokens) or headline,
                     language=None,
                     domains=official_domains[:5],
                     label="official",
@@ -294,7 +274,9 @@ class NewsApiSearchProvider:
                 )
         return list(unique.values())
 
-    def _select_evidence(self, evidence: list[SearchEvidence], *, limit: int) -> list[SearchEvidence]:
+    def _select_evidence(
+        self, headline: str, evidence: list[SearchEvidence], *, limit: int,
+    ) -> list[SearchEvidence]:
         deduped: dict[str, SearchEvidence] = {}
         for item in evidence:
             key = self._evidence_key(item)
@@ -302,27 +284,39 @@ class NewsApiSearchProvider:
             if current is None or self._evidence_rank(item) > self._evidence_rank(current):
                 deduped[key] = item
 
+        relevant = {
+            k: v for k, v in deduped.items()
+            if self._relevance_overlap(headline, v) >= MIN_RELEVANCE_OVERLAP
+        }
+        if not relevant:
+            relevant = deduped
+
         ranked = sorted(
-            deduped.values(),
+            relevant.values(),
             key=lambda item: self._evidence_rank(item),
             reverse=True,
         )
         return ranked[:limit]
 
+    def _relevance_overlap(self, headline: str, item: SearchEvidence) -> float:
+        headline_tokens = {t.casefold() for t in tokenize(headline, min_length=3)}
+        headline_entities = {e.casefold() for e in extract_entities(headline)}
+        evidence_text = " ".join(filter(None, [item.title, item.description]))
+        evidence_tokens = {t.casefold() for t in tokenize(evidence_text, min_length=3)}
+        evidence_entities = {e.casefold() for e in extract_entities(evidence_text)}
+
+        token_hits = len(headline_tokens & evidence_tokens)
+        entity_hits = len(headline_entities & evidence_entities)
+
+        total_signals = len(headline_tokens) + len(headline_entities) * 3
+        if total_signals == 0:
+            return 1.0
+        return (token_hits + entity_hits * 3) / total_signals
+
     def _official_coverage_sufficient(self, headline: str, evidence: list[SearchEvidence]) -> bool:
-        if not self._derive_official_domains(headline):
+        if not derive_official_domains(headline):
             return True
         return any(item.is_official for item in evidence)
-
-    def _derive_official_domains(self, headline: str) -> list[str]:
-        lowered = headline.casefold()
-        domains: list[str] = []
-        for keyword, candidates in OFFICIAL_KEYWORD_DOMAINS.items():
-            if keyword in lowered:
-                for domain in candidates:
-                    if domain not in domains:
-                        domains.append(domain)
-        return domains
 
     def _evidence_key(self, item: SearchEvidence) -> str:
         if item.source_domain:
@@ -374,5 +368,3 @@ class NewsApiSearchProvider:
             hostname = hostname[4:]
         return hostname or None
 
-    def _tokens(self, headline: str) -> list[str]:
-        return [token for token in re.findall(r"\w+", headline) if len(token) > 3]

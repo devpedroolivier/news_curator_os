@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..application import NewsCuratorService
 from ..config import Settings, get_settings
+from ..deep_pipeline import DeepHeadlinePipeline
 from ..pipeline import HeadlinePipeline
 from ..repository import RunRepository
 
@@ -36,6 +37,15 @@ def build_safe_pipeline(settings: Settings | None = None) -> HeadlinePipeline:
     return HeadlinePipeline(settings=safe_settings, repository=repository)
 
 
+def build_deep_pipeline(
+    settings: Settings | None = None,
+    repository: RunRepository | None = None,
+) -> DeepHeadlinePipeline:
+    active_settings = settings or get_settings()
+    active_repository = repository or build_repository(active_settings)
+    return DeepHeadlinePipeline(settings=active_settings, repository=active_repository)
+
+
 def build_curation_service(settings: Settings | None = None) -> NewsCuratorService:
     active_settings = settings or get_settings()
     return NewsCuratorService(
@@ -43,4 +53,5 @@ def build_curation_service(settings: Settings | None = None) -> NewsCuratorServi
         repository_factory=lambda: build_repository(active_settings),
         pipeline_factory=lambda: build_pipeline(active_settings),
         safe_pipeline_factory=lambda: build_safe_pipeline(active_settings),
+        deep_pipeline_factory=lambda: build_deep_pipeline(active_settings),
     )

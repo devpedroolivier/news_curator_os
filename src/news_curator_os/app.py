@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from fastapi.templating import Jinja2Templates
 from .config import get_settings
 from .infrastructure import build_curation_service
 from .models import HeadlineRequest, MonitoringSummary, PipelineRun
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -86,5 +89,9 @@ def create_base_app() -> FastAPI:
     @app.post("/api/v1/pipeline/run", response_model=PipelineRun)
     async def run_pipeline(payload: HeadlineRequest) -> PipelineRun:
         return await get_curation_service().run_headline(payload.headline)
+
+    @app.post("/api/v1/pipeline/deep", response_model=PipelineRun)
+    async def deep_pipeline(payload: HeadlineRequest) -> PipelineRun:
+        return await get_curation_service().deep_run_headline(payload.headline)
 
     return app

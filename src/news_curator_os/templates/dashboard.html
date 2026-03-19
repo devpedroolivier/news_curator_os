@@ -54,8 +54,15 @@
           <h2>Headline Input</h2>
           <form id="headline-form">
             <textarea id="headline-input" name="headline">Urgente: Banco Central anuncia nova medida que afeta o credito no Brasil</textarea>
-            <button type="submit">Executar pipeline e persistir</button>
+            <div class="btn-row">
+              <button id="submit-btn" type="submit">Pipeline rapido</button>
+              <button id="deep-btn" type="button">Curadoria profunda (3 rodadas)</button>
+            </div>
           </form>
+          <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="loading-spinner"></div>
+            <p id="loading-stage" class="loading-stage">Iniciando pipeline...</p>
+          </div>
         </aside>
       </section>
 
@@ -126,80 +133,136 @@
       const initialRecentRuns = {{ recent_runs | tojson }};
       const initialMonitoring = {{ monitoring | tojson }};
 
+      function esc(text) {
+        const el = document.createElement("span");
+        el.textContent = text ?? "";
+        return el.innerHTML;
+      }
+
+      function setText(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+
+      function buildElement(tag, className, children) {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (typeof children === "string") {
+          el.textContent = children;
+        } else if (Array.isArray(children)) {
+          children.forEach((child) => el.appendChild(child));
+        } else if (children instanceof Node) {
+          el.appendChild(children);
+        }
+        return el;
+      }
+
+      function buildStageCard(stage) {
+        const article = document.createElement("article");
+        article.className = "stage";
+        article.dataset.state = stage.state;
+
+        const top = buildElement("div", "stage-top");
+        top.appendChild(buildElement("span", null, stage.key));
+        top.appendChild(buildElement("div", "score", String(stage.score ?? "--")));
+        article.appendChild(top);
+
+        article.appendChild(buildElement("h3", null, stage.title));
+        article.appendChild(buildElement("p", null, stage.summary));
+
+        const ul = document.createElement("ul");
+        stage.details.forEach((detail) => ul.appendChild(buildElement("li", null, detail)));
+        article.appendChild(ul);
+
+        return article;
+      }
+
+      function buildEvidenceCard(item) {
+        const article = document.createElement("article");
+        article.className = "evidence-card";
+        article.appendChild(buildElement("strong", null, item.title));
+        article.appendChild(buildElement("div", "mini-meta", `${item.source} · ${item.published_at ?? "sem data"}`));
+        article.appendChild(buildElement("p", null, item.description ?? "Sem descricao adicional."));
+        if (item.url) {
+          const a = document.createElement("a");
+          a.href = item.url;
+          a.target = "_blank";
+          a.rel = "noreferrer";
+          a.textContent = "Abrir fonte";
+          article.appendChild(a);
+        }
+        return article;
+      }
+
+      function buildAuditCard(item) {
+        const article = document.createElement("article");
+        article.className = "audit-card";
+        article.appendChild(buildElement("strong", null, item.stage));
+        article.appendChild(buildElement("div", "mini-meta", `${item.severity} · ${item.created_at}`));
+        article.appendChild(buildElement("p", null, item.message));
+        return article;
+      }
+
+      function buildRecentCard(item) {
+        const article = document.createElement("article");
+        article.className = "recent-card";
+        article.appendChild(buildElement("strong", null, item.headline));
+        article.appendChild(buildElement("div", "mini-meta", item.created_at));
+        article.appendChild(buildElement("p", null, `Credibilidade: ${item.credibility_band} · Score: ${item.confidence_score}`));
+        article.appendChild(buildElement("p", null, `Evidencias: ${item.evidence_count} · Modo: ${item.execution_mode} · LLM: ${item.llm_mode}`));
+        return article;
+      }
+
+      function clearAndAppend(el, nodes) {
+        el.replaceChildren();
+        nodes.forEach((node) => el.appendChild(node));
+      }
+
       function renderPreview(data) {
-        document.getElementById("execution-mode").textContent = data.execution_mode;
-        document.getElementById("search-provider").textContent = data.search_provider;
-        document.getElementById("normalized-headline").textContent = data.normalized_headline;
-        document.getElementById("editorial-verdict").textContent = data.output.editorial_verdict;
-        document.getElementById("credibility-band").textContent = `${data.output.credibility_band} · score ${data.output.confidence_score}`;
-        document.getElementById("recommended-action").textContent = data.output.recommended_action;
+        setText("execution-mode", data.execution_mode);
+        setText("search-provider", data.search_provider);
+        setText("normalized-headline", data.normalized_headline);
+        setText("editorial-verdict", data.output.editorial_verdict);
+        setText("credibility-band", `${data.output.credibility_band} · score ${data.output.confidence_score}`);
+        setText("recommended-action", data.output.recommended_action);
 
         const stagesEl = document.getElementById("stages");
-        stagesEl.innerHTML = "";
-
-        data.stages.forEach((stage) => {
-          const article = document.createElement("article");
-          article.className = "stage";
-          article.dataset.state = stage.state;
-          article.innerHTML = `
-            <div class="stage-top">
-              <span>${stage.key}</span>
-              <div class="score">${stage.score ?? "--"}</div>
-            </div>
-            <h3>${stage.title}</h3>
-            <p>${stage.summary}</p>
-            <ul>
-              ${stage.details.map((detail) => `<li>${detail}</li>`).join("")}
-            </ul>
-          `;
-          stagesEl.appendChild(article);
-        });
+        clearAndAppend(stagesEl, data.stages.map(buildStageCard));
 
         const nextActionsEl = document.getElementById("next-actions");
-        nextActionsEl.innerHTML = data.next_actions
-          .map((item) => `<li>${item}</li>`)
-          .join("");
+        clearAndAppend(nextActionsEl, data.next_actions.map((item) => buildElement("li", null, item)));
 
         const evidenceEl = document.getElementById("evidence-list");
-        evidenceEl.innerHTML = data.evidence.length
-          ? data.evidence.map((item) => `
-              <article class="evidence-card">
-                <strong>${item.title}</strong>
-                <div class="mini-meta">${item.source} · ${item.published_at ?? "sem data"}</div>
-                <p>${item.description ?? "Sem descricao adicional."}</p>
-                ${item.url ? `<a href="${item.url}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
-              </article>
-            `).join("")
-          : `<article class="evidence-card"><strong>Sem evidencias anexadas</strong><p>O provider atual nao retornou artigos para esta headline.</p></article>`;
+        if (data.evidence.length) {
+          clearAndAppend(evidenceEl, data.evidence.map(buildEvidenceCard));
+        } else {
+          const empty = document.createElement("article");
+          empty.className = "evidence-card";
+          empty.appendChild(buildElement("strong", null, "Sem evidencias anexadas"));
+          empty.appendChild(buildElement("p", null, "O provider atual nao retornou artigos para esta headline."));
+          clearAndAppend(evidenceEl, [empty]);
+        }
 
         const auditEl = document.getElementById("audit-list");
-        auditEl.innerHTML = data.audit.map((item) => `
-          <article class="audit-card">
-            <strong>${item.stage}</strong>
-            <div class="mini-meta">${item.severity} · ${item.created_at}</div>
-            <p>${item.message}</p>
-          </article>
-        `).join("");
+        clearAndAppend(auditEl, data.audit.map(buildAuditCard));
       }
 
       function renderRecentRuns(items) {
         const recentEl = document.getElementById("recent-list");
-        recentEl.innerHTML = items.length
-          ? items.map((item) => `
-              <article class="recent-card">
-                <strong>${item.headline}</strong>
-                <div class="mini-meta">${item.created_at}</div>
-                <p>Credibilidade: ${item.credibility_band} · Score: ${item.confidence_score}</p>
-                <p>Evidencias: ${item.evidence_count} · Modo: ${item.execution_mode} · LLM: ${item.llm_mode}</p>
-              </article>
-            `).join("")
-          : `<article class="recent-card"><strong>Nenhuma execucao persistida</strong><p>As rodadas executadas pelo formulario passam a aparecer aqui.</p></article>`;
+        if (items.length) {
+          clearAndAppend(recentEl, items.map(buildRecentCard));
+        } else {
+          const empty = document.createElement("article");
+          empty.className = "recent-card";
+          empty.appendChild(buildElement("strong", null, "Nenhuma execucao persistida"));
+          empty.appendChild(buildElement("p", null, "As rodadas executadas pelo formulario passam a aparecer aqui."));
+          clearAndAppend(recentEl, [empty]);
+        }
       }
 
       function renderMonitoring(data) {
-        document.getElementById("monitor-total-runs").textContent = data.total_runs;
-        document.getElementById("monitor-runs-evidence").textContent = data.runs_with_evidence;
-        document.getElementById("monitor-runs-degraded").textContent = data.degraded_runs;
+        setText("monitor-total-runs", data.total_runs);
+        setText("monitor-runs-evidence", data.runs_with_evidence);
+        setText("monitor-runs-degraded", data.degraded_runs);
       }
 
       async function refreshRecentRuns() {
@@ -214,22 +277,83 @@
         renderMonitoring(data);
       }
 
+      const LOADING_FAST = [
+        "Buscando evidencias...",
+        "Analisando headline...",
+        "Verificando fontes...",
+        "Qualificando credibilidade...",
+        "Gerando redacao final...",
+      ];
+
+      const LOADING_DEEP = [
+        "Rodada 1: buscando em portugues...",
+        "Rodada 1: analisando resultados...",
+        "Rodada 2: buscando em ingles...",
+        "Rodada 2: verificando cruzamentos...",
+        "Rodada 3: busca dirigida por lacunas...",
+        "Rodada 3: consolidando evidencias...",
+        "Analise final sobre todas as fontes...",
+        "Verificacao cruzada consolidada...",
+        "Qualificando credibilidade...",
+        "Gerando redacao final...",
+      ];
+
+      let activeInterval = null;
+
+      function showLoading(stages, intervalMs) {
+        const overlay = document.getElementById("loading-overlay");
+        const stageEl = document.getElementById("loading-stage");
+        document.getElementById("submit-btn").disabled = true;
+        document.getElementById("deep-btn").disabled = true;
+        overlay.classList.remove("hidden");
+        let idx = 0;
+        stageEl.textContent = stages[0];
+        activeInterval = setInterval(() => {
+          idx++;
+          stageEl.textContent = idx < stages.length ? stages[idx] : "Finalizando...";
+        }, intervalMs);
+        return activeInterval;
+      }
+
+      function hideLoading() {
+        if (activeInterval) clearInterval(activeInterval);
+        activeInterval = null;
+        document.getElementById("loading-overlay").classList.add("hidden");
+        document.getElementById("submit-btn").disabled = false;
+        document.getElementById("deep-btn").disabled = false;
+      }
+
+      async function runPipeline(endpoint, stages, intervalMs) {
+        const headline = document.getElementById("headline-input").value.trim();
+        showLoading(stages, intervalMs);
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ headline }),
+          });
+          const data = await response.json();
+          hideLoading();
+          renderPreview(data);
+          await refreshRecentRuns();
+          await refreshMonitoring();
+        } catch (err) {
+          hideLoading();
+          document.getElementById("loading-stage").textContent = "Erro ao executar pipeline.";
+        }
+      }
+
       async function submitHeadline(event) {
         event.preventDefault();
-        const headline = document.getElementById("headline-input").value.trim();
-        const response = await fetch("/api/v1/pipeline/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ headline }),
-        });
+        await runPipeline("/api/v1/pipeline/run", LOADING_FAST, 3500);
+      }
 
-        const data = await response.json();
-        renderPreview(data);
-        await refreshRecentRuns();
-        await refreshMonitoring();
+      async function submitDeep() {
+        await runPipeline("/api/v1/pipeline/deep", LOADING_DEEP, 5000);
       }
 
       document.getElementById("headline-form").addEventListener("submit", submitHeadline);
+      document.getElementById("deep-btn").addEventListener("click", submitDeep);
       renderPreview(initialData);
       renderRecentRuns(initialRecentRuns);
       renderMonitoring(initialMonitoring);

@@ -1,10 +1,13 @@
 import asyncio
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from agno.workflow import Step, Workflow
 
 from .infrastructure import build_curation_service
+
+logger = logging.getLogger(__name__)
 
 
 async def _run_pipeline_from_workflow_input(headline: str, persist: bool, stream: bool) -> str:
@@ -13,10 +16,7 @@ async def _run_pipeline_from_workflow_input(headline: str, persist: bool, stream
     callback = None
     if stream:
         def callback(event: str, payload: dict[str, object]) -> None:
-            print(
-                f"[workflow:{event}] {json.dumps(payload, ensure_ascii=False)}",
-                flush=True,
-            )
+            logger.info("[workflow:%s] %s", event, json.dumps(payload, ensure_ascii=False))
     result = (
         await pipeline.run(
             headline or "Headline de exemplo para triagem editorial",

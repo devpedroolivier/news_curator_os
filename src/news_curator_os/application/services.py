@@ -5,6 +5,7 @@ from typing import Callable
 
 from ..config import Settings
 from ..models import MonitoringSummary, PipelineRun, RecentRunSummary
+from ..deep_pipeline import DeepHeadlinePipeline
 from ..pipeline import HeadlinePipeline
 from ..repository import RunRepository
 
@@ -24,11 +25,13 @@ class NewsCuratorService:
         repository_factory: Callable[[], RunRepository],
         pipeline_factory: Callable[[], HeadlinePipeline],
         safe_pipeline_factory: Callable[[], HeadlinePipeline],
+        deep_pipeline_factory: Callable[[], DeepHeadlinePipeline] | None = None,
     ) -> None:
         self.settings = settings
         self._repository_factory = repository_factory
         self._pipeline_factory = pipeline_factory
         self._safe_pipeline_factory = safe_pipeline_factory
+        self._deep_pipeline_factory = deep_pipeline_factory
 
     def initialize(self) -> None:
         self.repository.initialize()
@@ -44,6 +47,18 @@ class NewsCuratorService:
     @property
     def safe_pipeline(self) -> HeadlinePipeline:
         return self._safe_pipeline_factory()
+
+    @property
+    def deep_pipeline(self) -> DeepHeadlinePipeline | None:
+        if self._deep_pipeline_factory is None:
+            return None
+        return self._deep_pipeline_factory()
+
+    async def deep_run_headline(self, headline: str) -> PipelineRun:
+        dp = self.deep_pipeline
+        if dp is None:
+            return await self.run_headline(headline)
+        return await dp.run(headline)
 
     async def preview_headline(self, headline: str) -> PipelineRun:
         return await self.pipeline.preview(headline)

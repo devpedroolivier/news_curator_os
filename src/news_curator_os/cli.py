@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import csv
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from typing import Any
 from .config import get_settings
 from .infrastructure import build_curation_service
 from .workflow import build_bootstrap_workflow
+
+logger = logging.getLogger(__name__)
 
 
 def add_common_execution_args(parser: argparse.ArgumentParser) -> None:
@@ -50,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_stream_callback(prefix: str):
     def _callback(event: str, payload: dict[str, Any]) -> None:
-        print(f"[{prefix}:{event}] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+        logger.info("[%s:%s] %s", prefix, event, json.dumps(payload, ensure_ascii=False))
 
     return _callback
 
@@ -219,20 +222,24 @@ async def run_batch(
     headlines = load_headlines_from_file(input_file)
     results: list[dict[str, Any]] = []
     for index, headline in enumerate(headlines, start=1):
-        print(f"batch_item: {index}/{len(headlines)} | headline: {headline}", flush=True)
+        logger.info("batch_item: %d/%d | headline: %s", index, len(headlines), headline)
         if mode == "flow":
             payload = await run_flow(headline, persist, stream=stream)
         else:
             payload = await run_workflow(headline, persist, stream=stream)
         results.append(payload)
         md_path = write_markdown_output(output_md, payload, mode=mode, batch=True)
-        print(f"markdown_saved: {md_path}", flush=True)
+        logger.info("markdown_saved: %s", md_path)
         print(render_terminal_report(payload, mode=f"{mode}-batch"), flush=True)
         print("", flush=True)
     return results
 
 
 async def async_main() -> int:
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        level=logging.INFO,
+    )
     parser = build_parser()
     args = parser.parse_args()
     get_settings.cache_clear()
